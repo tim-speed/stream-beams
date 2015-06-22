@@ -1,0 +1,38 @@
+{
+  "name": "stream-beams",
+  "version": "0.0.1",
+  "description": "Simple node based file / message transfer Server / Client",
+  "main": "dst/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tim-speed/stream-beams.git"
+  },
+  "keywords": [
+    "node",
+    "nodejs",
+    "file",
+    "files",
+    "transfer",
+    "ftp",
+    "socket",
+    "stream"
+  ],
+  "author": "Tim Speed",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/tim-speed/stream-beams/issues"
+  },
+  "homepage": "https://github.com/tim-speed/stream-beams",
+  "engines": {
+    "node": ">= 0.12.2"
+  },
+  "dependencies": {
+    "source-map-support": "^0.2.10"
+  },
+  "devDependencies": {
+    "typescript": "1.4.1"
+  }
+}
