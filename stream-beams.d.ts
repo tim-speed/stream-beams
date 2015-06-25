@@ -2,30 +2,24 @@ declare module "stream-beams" {
 
     import dataBeams = require('data-beams');
     import stream = require('stream');
-
     export class HeaderWrappedStream extends stream.Readable {
-        _stream: stream.Readable;
-        _header: NodeBuffer;
-        _paused: boolean;
-        _dataHandler: (data: NodeBuffer) => void;
-        constructor(stream: stream.Readable, header: NodeBuffer);
-        read(length: number): NodeBuffer;
-        setEncoding(encoding: string): HeaderWrappedStream;
-        resume(): HeaderWrappedStream;
-        pause(): HeaderWrappedStream;
-        isPaused(): boolean;
-        pipe(destination: stream.Writable, options?: {
-            end: boolean;
-        }): void;
-        unpipe(destination?: stream.Writable): void;
-        unshift(chunk: any): void;
-        wrap(stream: stream.Readable): stream.Readable;
+        _ended: boolean;
+        _received: number;
+        _push: (chunk: any, encoding?: string) => boolean;
+        _data: NodeBuffer[];
+        _readLimit: number;
+        end: () => void;
+        constructor(stream: stream.Readable, header?: NodeBuffer);
+        _checkEnd(): boolean;
+        _sendData(): void;
+        _read(size: number): void;
     }
-
     export class StreamConnection extends dataBeams.Connection {
-        stream(message: Object, stream?: stream.Readable): dataBeams.TransferOut;
+        Callbacks: {
+            [id: number]: Function;
+        };
+        stream(message: Object, stream?: stream.Readable, callback?: Function): dataBeams.TransferOut;
     }
-
     export function streamBeam(connection: dataBeams.Connection): StreamConnection;
 
 }
