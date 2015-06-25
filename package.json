@@ -30,7 +30,8 @@
     "node": ">= 0.12.2"
   },
   "dependencies": {
-    "source-map-support": "^0.2.10"
+    "source-map-support": "^0.2.10",
+    "data-beams": "git://github.com/tim-speed/data-beams.git#master"
   },
   "devDependencies": {
     "typescript": "1.4.1"
