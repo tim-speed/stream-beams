@@ -2,22 +2,17 @@
 /// <reference path="../node_modules/data-beams/data-beams.d.ts" />
 import dataBeams = require('data-beams');
 import stream = require('stream');
-export declare class HeaderWrappedStream extends stream.Readable {
-    _ended: boolean;
-    _received: number;
-    _push: (chunk: any, encoding?: string) => boolean;
-    _data: NodeBuffer[];
-    _readLimit: number;
-    end: () => void;
-    constructor(stream: stream.Readable, header?: NodeBuffer);
-    _checkEnd(): boolean;
-    _sendData(): void;
-    _read(size: number): void;
+export declare class WrappedStream extends dataBeams.ArrayBufferedStream {
+    constructor(stream: stream.Readable, dataPipeHandler?: (data: Buffer) => void);
+}
+export declare class HeaderWrappedStream extends WrappedStream {
+    constructor(stream: stream.Readable, header: NodeBuffer);
 }
 export declare class StreamConnection extends dataBeams.Connection {
     Callbacks: {
         [id: number]: Function;
     };
     stream(message: Object, stream?: stream.Readable, callback?: Function): dataBeams.TransferOut;
+    _handleCallback(callbackId: number, messageBuffer?: Buffer, streamScraps?: Buffer, transfer?: dataBeams.TransferIn): void;
 }
 export declare function streamBeam(connection: dataBeams.Connection): StreamConnection;

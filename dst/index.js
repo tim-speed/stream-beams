@@ -9,91 +9,148 @@ var __extends = this.__extends || function (d, b) {
 var dataBeams = require('data-beams');
 var stream = require('stream');
 var debug = require('./debug');
+var dbgWrappedStream = debug('WrappedStream');
+var WrappedStream = (function (_super) {
+    __extends(WrappedStream, _super);
+    function WrappedStream(stream, dataPipeHandler) {
+        _super.call(this);
+        // Pipe the data to this
+        var _ = this;
+        dataPipeHandler = dataPipeHandler || function dataPipeHandler(data) {
+            _.write(data);
+        };
+        function removeDataPipeAndEnd() {
+            dbgWrappedStream('Ending stream.');
+            stream.removeListener('data', dataPipeHandler);
+            stream.removeListener('end', removeDataPipeAndEnd);
+            _.end();
+        }
+        stream.on('data', dataPipeHandler);
+        stream.on('end', removeDataPipeAndEnd);
+    }
+    return WrappedStream;
+})(dataBeams.ArrayBufferedStream);
+exports.WrappedStream = WrappedStream;
 var dbgHeaderWrappedStream = debug('HeaderWrappedStream');
 var HeaderWrappedStream = (function (_super) {
     __extends(HeaderWrappedStream, _super);
     function HeaderWrappedStream(stream, header) {
+        _super.call(this, stream);
+        dbgHeaderWrappedStream('Initializing header-wrapped stream, header length %d bytes.', header.length);
+        if (header.length) {
+            this.write(header);
+        }
+    }
+    return HeaderWrappedStream;
+})(WrappedStream);
+exports.HeaderWrappedStream = HeaderWrappedStream;
+var dbgOutStreamManager = debug('OutStreamManager');
+/**
+ * OutStreamManager - Stream bridge, multiplexer, gets bytes written to it from program, builds
+ *     and sends packets through data-beams transfer by writing to itself
+ * Note: based on how it handles streams, only one per transfer should exist
+ */
+var OutStreamManager = (function (_super) {
+    __extends(OutStreamManager, _super);
+    function OutStreamManager() {
         _super.call(this);
-        this._ended = false;
-        this._received = 0;
-        if (header && header.length) {
-            this._data = [header];
+        this.streamId = 0;
+    }
+    OutStreamManager.prototype.addStream = function (stream) {
+        var streamId = ++this.streamId;
+        dbgOutStreamManager('Adding stream %d for outbound transfer', streamId);
+        // TODO: Potentially optimize?
+        var header = new Buffer(5);
+        header.writeUInt8(64 /* HasStream */, 0);
+        header.writeUInt32BE(streamId, 1);
+        // Define listeners
+        var _ = this;
+        function outStreamOnData(data) {
+            // Write stream header + data packet
+            _.write(Buffer.concat([header, data], 5 + data.length));
+        }
+        function outStreamOnEnd() {
+            dbgOutStreamManager('Stream %d ended outbound transfer', streamId);
+            // Cleanup
+            stream.removeListener('data', outStreamOnData);
+            stream.removeListener('end', outStreamOnEnd);
+            // Write a message indicating that this stream has ended
+            header.writeUInt8(64 /* HasStream */ | 8 /* CloseStream */, 0);
+            _.write(header);
+            // If this is the last stream to close end our transfer stream
+            if (!--_.streamId) {
+                _.end();
+            }
+        }
+        // Register Data and End listeners
+        stream.on('data', outStreamOnData);
+        stream.on('end', outStreamOnEnd);
+        return streamId;
+    };
+    return OutStreamManager;
+})(dataBeams.ArrayBufferedStream);
+var dbgInStreamManager = debug('InStreamManager');
+/**
+ * InStreamManager - Stream bridge, multiplexer, gets bytes written to it from program, builds
+ *     and sends packets through individual streams that it builds
+ * Note: based on how it handles streams, only one per transfer should exist
+ */
+var InStreamManager = (function () {
+    function InStreamManager(transfer, initialPacket) {
+        this.streams = {};
+        this.transfer = transfer;
+        // Define listeners
+        var _ = this;
+        function inTransferOnData(data) {
+            // Parse header and route packet
+            _._handleData(data);
+        }
+        function inTransferOnEnd() {
+            for (var streamId in _.streams) {
+                _._endStream(streamId);
+            }
+        }
+        // Register Data and End listeners
+        transfer.on('data', inTransferOnData);
+        transfer.on('end', inTransferOnEnd);
+        if (initialPacket)
+            this._handleData(initialPacket);
+    }
+    InStreamManager.prototype._endStream = function (streamId) {
+        dbgInStreamManager('Transfer %d ending stream %d', this.transfer.id, streamId);
+        this.streams[streamId].end();
+        delete this.streams[streamId];
+    };
+    InStreamManager.prototype._handleData = function (data) {
+        // First byte is the flags
+        var flags = data.readUInt8(0);
+        // Next 4 is the id
+        var streamId = data.readUInt32BE(1);
+        if (flags & 8 /* CloseStream */) {
+            this._endStream(streamId);
         }
         else {
-            this._data = [];
+            this.streams[streamId].write(data.slice(5));
         }
-        this._readLimit = 0;
-        // Pipe the data to this
-        var _ = this;
-        function dataPipeHandler(data) {
-            _._data.push(data);
-            _._received += data.length;
-            dbgHeaderWrappedStream('Continuing data stream, added %d bytes (total %d).', data.length, _._received);
-            _._sendData();
-        }
-        function removeDataPipeAndEnd() {
-            dbgHeaderWrappedStream('Ending stream.');
-            stream.removeListener('data', dataPipeHandler);
-            stream.removeListener('end', removeDataPipeAndEnd);
-            _._ended = true;
-            // Send any remaining data up to the amount specified by _read if we can
-            _._sendData();
-        }
-        stream.on('data', dataPipeHandler);
-        stream.on('end', removeDataPipeAndEnd);
-        this.end = removeDataPipeAndEnd;
-    }
-    HeaderWrappedStream.prototype._checkEnd = function () {
-        if (this._ended && this._data.length === 0) {
-            this.push(null);
-            dbgHeaderWrappedStream('Stream finished, requested %d bytes, pushing null.', this._readLimit);
-            return true;
-        }
-        return false;
     };
-    HeaderWrappedStream.prototype._sendData = function () {
-        if (this._checkEnd()) {
-            return;
-        }
-        var read = 0;
-        var buffer;
-        var remaining = Math.max(this._readLimit, 0);
-        while (remaining && (buffer = this._data[0])) {
-            if (buffer.length > remaining) {
-                // cut up the buffer and put the rest back in queue
-                this._data[0] = buffer.slice(remaining);
-                buffer = buffer.slice(0, remaining);
-            }
-            else {
-                // Remove the buffer from the list
-                this._data.shift();
-            }
-            // Send this buffer
-            this.push(buffer);
-            read += buffer.length;
-            // Update the remaining amount of bytes we should read
-            remaining = this._readLimit - read;
-        }
-        dbgHeaderWrappedStream('Reading data stream, requested %d bytes (provided %d).', this._readLimit, read);
-        // Update the read limit
-        this._readLimit -= read;
-        this._checkEnd();
+    InStreamManager.prototype.buildStream = function (streamId) {
+        var stream = this.streams[streamId] = new dataBeams.ArrayBufferedStream();
+        dbgInStreamManager('Adding stream %d for inbound transfer', streamId);
+        return stream;
     };
-    HeaderWrappedStream.prototype._read = function (size) {
-        this._readLimit = size;
-        this._sendData();
-    };
-    return HeaderWrappedStream;
-})(stream.Readable);
-exports.HeaderWrappedStream = HeaderWrappedStream;
+    return InStreamManager;
+})();
 var dbgStreamConnection = debug('StreamConnection');
 var StreamFlags;
 (function (StreamFlags) {
     StreamFlags[StreamFlags["HasMessage"] = 128] = "HasMessage";
     StreamFlags[StreamFlags["HasStream"] = 64] = "HasStream";
     StreamFlags[StreamFlags["HasCallback"] = 32] = "HasCallback";
-    StreamFlags[StreamFlags["IsCallback"] = 16] = "IsCallback"; // Used when we callback through the callback
+    StreamFlags[StreamFlags["IsCallback"] = 16] = "IsCallback";
+    StreamFlags[StreamFlags["CloseStream"] = 8] = "CloseStream"; // Used when there is multiple streams
 })(StreamFlags || (StreamFlags = {}));
+// TODO: This is a lazy way, should create a proper array struct using buffers
+var STREAM_STRING_LEAD = '!@#$stream-beams-';
 var StreamConnection = (function (_super) {
     __extends(StreamConnection, _super);
     function StreamConnection() {
@@ -147,15 +204,56 @@ var StreamConnection = (function (_super) {
             return this.sendBuffer(outBuffer);
         }
     };
+    StreamConnection.prototype._handleCallback = function (callbackId, messageBuffer, streamScraps, transfer) {
+        var callbacks = this.Callbacks;
+        var callback = callbacks[callbackId];
+        if (!callback)
+            throw new Error('Callback ' + callbackId + ' is not defined!');
+        // Delete the callback
+        // TODO: Add persistant callbacks?
+        delete callbacks[callbackId];
+        // Handle args if available
+        if (messageBuffer) {
+            // Process the callback message and handle any streams we find
+            var argsString = messageBuffer.toString('utf8');
+            var args = JSON.parse(argsString);
+            if (transfer) {
+                var inStreamHandler = new InStreamManager(transfer);
+                for (var i = 0; i < args.length; i++) {
+                    var arg = args[i];
+                    // TODO: This is a lazy way, should create a proper array struct using buffers
+                    if (typeof arg === 'string' && arg.substr(0, STREAM_STRING_LEAD.length) === STREAM_STRING_LEAD) {
+                        var streamId = Number(arg.substr(STREAM_STRING_LEAD.length));
+                        args[i] = inStreamHandler.buildStream(streamId);
+                    }
+                }
+            }
+            callback.apply(this, args);
+        }
+        else {
+            callback.call(this);
+        }
+    };
     return StreamConnection;
 })(dataBeams.Connection);
 exports.StreamConnection = StreamConnection;
 function streamBeam(connection) {
     function buildCallbackHandler(callbackId) {
         return function streamBeamsCallbackResponder() {
+            var outStreamManager;
             var transferLength = 5;
             var writeOffset = 0;
             var flags = 32 /* HasCallback */ | 16 /* IsCallback */;
+            for (var i = 0; i < arguments.length; i++) {
+                var arg = arguments[i];
+                if (arg instanceof stream.Readable) {
+                    outStreamManager = outStreamManager || new OutStreamManager();
+                    arguments[i] = STREAM_STRING_LEAD + outStreamManager.addStream(arg);
+                }
+            }
+            if (outStreamManager) {
+                flags |= 64 /* HasStream */;
+            }
             var argumentString;
             var argumentByteLength;
             if (arguments.length) {
@@ -170,16 +268,22 @@ function streamBeam(connection) {
             writeOffset += 1;
             outBuffer.writeUInt32BE(callbackId, writeOffset);
             writeOffset += 4;
-            // TODO: Add support for sending streams as arguments
             if (argumentString) {
                 outBuffer.writeUInt32BE(argumentByteLength, writeOffset);
                 writeOffset += 4;
                 outBuffer.write(argumentString, writeOffset, argumentByteLength, 'utf8');
                 writeOffset += argumentByteLength;
             }
-            dbgStreamConnection('Sending callback response flags: %d, headerLength: %s, argsLength: %d', flags, outBuffer.length, arguments.length);
-            // Finally send
-            connection.sendBuffer(outBuffer);
+            dbgStreamConnection('Sending callback response flags: %d, headerLength: %s, argsLength: %d, streams: %d', flags, outBuffer.length, arguments.length);
+            if (outStreamManager) {
+                // Start a streaming transfer
+                outStreamManager.write(outBuffer);
+                connection.sendStream(outStreamManager);
+            }
+            else {
+                // Send just the buffer, there are no streams
+                connection.sendBuffer(outBuffer);
+            }
         };
     }
     function streamBeamsOnTransfer(transfer) {
@@ -223,48 +327,38 @@ function streamBeam(connection) {
                 dbgStreamConnection('Reading message byte length from transfer %d : %d', transfer.id, messageByteLength);
                 readOffset += 4;
             }
-            if (isCallback) {
-                var callbacks;
-                var callback;
-                if ((hasMessage && messageByteLength !== null) || (!hasMessage && callbackId !== null)) {
-                    // Got all the data we needed to process, remove listeners.
-                    streamBeamsRemoveListeners();
-                    callbacks = connection.Callbacks;
-                    callback = callbacks[callbackId];
-                    if (!callback)
-                        throw new Error('Callback ' + callbackId + ' is not defined!');
-                    // Delete the callback
-                    // TODO: Add persistant callbacks?
-                    delete callbacks[callbackId];
-                    // Handle args if available
-                    if (hasMessage) {
-                        dbgStreamConnection('Handling callback %d, transfer %d, argsBytes %d', callbackId, transfer.id, messageByteLength);
-                        var argsString = transferBuffer.toString('utf8', readOffset, readOffset + messageByteLength);
-                        callback.apply(connection, JSON.parse(argsString));
-                    }
-                    else {
-                        dbgStreamConnection('Handling callback %d, transfer %d', callbackId, transfer.id);
-                        callback.call(connection);
+            if (streamStart === null && flags !== null) {
+                if (hasMessage) {
+                    if (messageByteLength !== null) {
+                        streamStart = readOffset + messageByteLength;
                     }
                 }
+                else {
+                    // Callback or stream
+                    streamStart = readOffset;
+                }
             }
-            else {
-                // Handle as message stream push
-                var streamStart = null;
-                if (streamStart === null && flags !== null) {
+            // Handle as message stream push
+            if (streamStart !== null && transferBuffer.length >= streamStart) {
+                // Got all the data we needed to process, remove listeners.
+                streamBeamsRemoveListeners();
+                if (isCallback) {
+                    var callbacks;
+                    var callback;
+                    dbgStreamConnection('Handling callback %d, transfer %d, argsBytes %d', callbackId, transfer.id, messageByteLength || 0);
                     if (hasMessage) {
-                        if (messageByteLength !== null) {
-                            streamStart = readOffset + messageByteLength;
+                        if (hasStream) {
+                            connection._handleCallback(callbackId, transferBuffer.slice(readOffset, messageByteLength), transferBuffer.slice(streamStart), transfer);
+                        }
+                        else {
+                            connection._handleCallback(callbackId, transferBuffer.slice(readOffset, messageByteLength));
                         }
                     }
                     else {
-                        // Callback or stream
-                        streamStart = readOffset;
+                        connection._handleCallback(callbackId);
                     }
                 }
-                if (streamStart !== null && transferBuffer.length >= streamStart) {
-                    // Got all the data we needed to process, remove listeners.
-                    streamBeamsRemoveListeners();
+                else {
                     var messageObj = null;
                     var callback = null;
                     var stream = null;
