@@ -106,6 +106,9 @@ var InStreamManager = (function () {
             _._handleData(data);
         }
         function inTransferOnEnd() {
+            // Cleanup
+            transfer.removeListener('data', inTransferOnData);
+            transfer.removeListener('end', inTransferOnEnd);
             for (var streamId in _.streams) {
                 _._endStream(streamId);
             }
@@ -113,7 +116,7 @@ var InStreamManager = (function () {
         // Register Data and End listeners
         transfer.on('data', inTransferOnData);
         transfer.on('end', inTransferOnEnd);
-        if (initialPacket)
+        if (initialPacket && initialPacket.length)
             this._handleData(initialPacket);
     }
     InStreamManager.prototype._endStream = function (streamId) {
@@ -215,10 +218,11 @@ var StreamConnection = (function (_super) {
         // Handle args if available
         if (messageBuffer) {
             // Process the callback message and handle any streams we find
-            var argsString = messageBuffer.toString('utf8');
+            var argsString = messageBuffer.toString('utf8', 0, messageBuffer.length);
+            dbgStreamConnection('Handling callback %d with args "%s" length %d', callbackId, argsString, messageBuffer.length);
             var args = JSON.parse(argsString);
             if (transfer) {
-                var inStreamHandler = new InStreamManager(transfer);
+                var inStreamHandler = new InStreamManager(transfer, streamScraps);
                 for (var i = 0; i < args.length; i++) {
                     var arg = args[i];
                     // TODO: This is a lazy way, should create a proper array struct using buffers
@@ -348,10 +352,10 @@ function streamBeam(connection) {
                     dbgStreamConnection('Handling callback %d, transfer %d, argsBytes %d', callbackId, transfer.id, messageByteLength || 0);
                     if (hasMessage) {
                         if (hasStream) {
-                            connection._handleCallback(callbackId, transferBuffer.slice(readOffset, messageByteLength), transferBuffer.slice(streamStart), transfer);
+                            connection._handleCallback(callbackId, transferBuffer.slice(readOffset, streamStart), transferBuffer.slice(streamStart), transfer);
                         }
                         else {
-                            connection._handleCallback(callbackId, transferBuffer.slice(readOffset, messageByteLength));
+                            connection._handleCallback(callbackId, transferBuffer.slice(readOffset, streamStart));
                         }
                     }
                     else {
