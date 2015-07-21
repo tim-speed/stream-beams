@@ -315,7 +315,7 @@ export function streamBeam(connection: dataBeams.Connection): StreamConnection {
                 writeOffset += argumentByteLength;
             }
 
-            dbgStreamConnection('Sending callback response flags: %d, headerLength: %s, argsLength: %d, streams: %d', flags, outBuffer.length, arguments.length);
+            dbgStreamConnection('Sending callback response flags: %d, headerLength: %s, argsLength: %d, streams: %d', flags, outBuffer.length, arguments.length, (outStreamManager && outStreamManager.streamId) || 0);
 
             if (outStreamManager) {
                 // Start a streaming transfer
@@ -387,6 +387,7 @@ export function streamBeam(connection: dataBeams.Connection): StreamConnection {
                 }
             }
             // Handle as message stream push
+            dbgStreamConnection('Checking if stream start satisfied, %d of %d bytes received', transferBuffer.length, streamStart);
             if (streamStart !== null && transferBuffer.length >= streamStart) {
                 // Got all the data we needed to process, remove listeners.
                 streamBeamsRemoveListeners();
@@ -442,12 +443,12 @@ export function streamBeam(connection: dataBeams.Connection): StreamConnection {
         function streamBeamsRemoveListeners() {
             dbgStreamConnection('Done with transfer %d', transfer.id);
             transfer.removeListener('data', streamBeamsHandleTransfer);
-            transfer.removeListener('complete', streamBeamsRemoveListeners);
+            transfer.removeListener('end', streamBeamsRemoveListeners);
         }
 
         // Keep listening to process the full stream or json message
         transfer.on('data', streamBeamsHandleTransfer);
-        transfer.on('complete', streamBeamsRemoveListeners);
+        transfer.on('end', streamBeamsRemoveListeners);
     }
 
     connection.on('transfer', streamBeamsOnTransfer);
