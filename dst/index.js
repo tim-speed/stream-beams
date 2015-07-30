@@ -244,6 +244,9 @@ exports.StreamConnection = StreamConnection;
 function streamBeam(connection) {
     function buildCallbackHandler(callbackId) {
         return function streamBeamsCallbackResponder() {
+            if (!connection.connected) {
+                throw new Error('Cannot call callback, connection is in a disconnected state.');
+            }
             var outStreamManager;
             var transferLength = 5;
             var writeOffset = 0;
